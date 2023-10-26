@@ -1,47 +1,80 @@
 use std::process;
+use std::sync::Arc;
 
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use tokio::{
     net::{TcpListener, TcpStream},
     signal, task,
 };
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-async fn handle_client(stream: TcpStream) {
-    let mut ws_stream = tokio_tungstenite::accept_async(stream)
-        .await
-        .expect("Error during handshake");
+// Define a struct to represent the WebSocket server
+#[derive(Debug, Clone)]
+struct WebSocketServer {
+    listener: Arc<TcpListener>,
+}
 
-    loop {
-        let msg = ws_stream
-            .next()
-            .await
-            .expect("Error reading message")
-            .expect("No message received");
+impl WebSocketServer {
+    async fn new(address: &str) -> Self {
+        let listener = TcpListener::bind(address).await.expect("Failed to bind");
 
-        match msg {
-            Message::Text(text) => {
-                println!("Received text message: {}", text);
-                ws_stream
-                    .send(Message::Text(text))
-                    .await
-                    .expect("Error sending message");
+        Self {
+            listener: listener.into(),
+        }
+    }
+
+    // Method to handle a client's connection
+    async fn handle_client(&self, stream: TcpStream) {
+        let mut ws_stream = accept_async(stream).await.expect("Error during handshake");
+
+        loop {
+            let msg = ws_stream
+                .next()
+                .await
+                .expect("Error reading message")
+                .expect("No message received");
+
+            match msg {
+                Message::Text(text) => {
+                    println!("Received text message: {}", text.trim());
+                }
+                Message::Binary(bin) => {
+                    println!("Received Binary message: {:?}", bin);
+                }
+                Message::Close(_) => {
+                    break;
+                }
+                _ => {}
             }
-            Message::Close(_) => {
-                break;
-            }
-            _ => {}
+        }
+    }
+
+    // Method to start the server and handle incoming connections
+    async fn start(&self) {
+        println!(
+            "Server is listening on {}",
+            self.listener.local_addr().unwrap()
+        );
+
+        loop {
+            let (stream, _) = self
+                .listener
+                .accept()
+                .await
+                .expect("Error accepting connection");
+
+            let cloned_self = self.clone();
+
+            task::spawn(async move {
+                cloned_self.handle_client(stream).await;
+            });
         }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:8080")
-        .await
-        .expect("Failed to bind");
-
-    println!("Server is listening on 127.0.0.1:8080");
+    let server = WebSocketServer::new("127.0.0.1:8080").await;
 
     task::spawn(async move {
         signal::ctrl_c().await.expect("Failed to bind SIGINT");
@@ -49,7 +82,5 @@ async fn main() {
         process::exit(0);
     });
 
-    while let Ok((stream, _)) = listener.accept().await {
-        task::spawn(handle_client(stream));
-    }
+    server.start().await;
 }
