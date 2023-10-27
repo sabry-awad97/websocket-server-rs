@@ -1,6 +1,8 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::{process, sync::Mutex};
+use std::{
+    collections::HashMap,
+    process,
+    sync::{Arc, RwLock},
+};
 
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
@@ -13,18 +15,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 #[derive(Debug, Deserialize, Serialize, Clone, Eq, Hash, PartialEq)]
 enum EventType {
-    Join,
     Message,
-}
-
-impl From<&str> for EventType {
-    fn from(s: &str) -> Self {
-        match s {
-            "join" => EventType::Join,
-            "message" => EventType::Message,
-            _ => panic!("Unknown event type: {}", s),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -37,9 +28,8 @@ struct Event<T> {
 #[derive(Clone)]
 struct WebSocketServer<P> {
     listener: Arc<TcpListener>,
-
     #[allow(clippy::type_complexity)]
-    event_callbacks: Arc<Mutex<HashMap<EventType, Box<dyn Fn(Event<P>) + Send>>>>,
+    event_callbacks: Arc<RwLock<HashMap<EventType, Box<dyn Fn(Event<P>) + Send + Sync>>>>,
 }
 
 impl<P> WebSocketServer<P>
@@ -50,7 +40,7 @@ where
         let listener = TcpListener::bind(address).await.expect("Failed to bind");
         Self {
             listener: listener.into(),
-            event_callbacks: Arc::new(Mutex::new(HashMap::new())),
+            event_callbacks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -69,7 +59,7 @@ where
             match msg {
                 Message::Text(text) => {
                     if let Ok(event) = serde_json::from_str::<Event<P>>(&text) {
-                        if let Some(callback) = callbacks.lock().unwrap().get(&event.r#type.clone())
+                        if let Some(callback) = callbacks.read().unwrap().get(&event.r#type.clone())
                         {
                             callback(event);
                         }
@@ -88,9 +78,9 @@ where
 
     fn on<F>(&self, event_type: EventType, callback: F)
     where
-        F: Fn(Event<P>) + Send + 'static,
+        F: Fn(Event<P>) + Send + Sync + 'static,
     {
-        let mut callbacks = self.event_callbacks.lock().unwrap();
+        let mut callbacks = self.event_callbacks.write().unwrap(); // Acquiring write lock
         callbacks.insert(event_type, Box::new(callback));
     }
 
