@@ -13,7 +13,20 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+#[derive(Debug, thiserror::Error)]
+enum ServerError {
+    #[error("IO error: {0}")]
+    IO(#[from] tokio::io::Error),
+
+    #[error("Tungstenite error: {0}")]
+    Tungstenite(#[from] tokio_tungstenite::tungstenite::Error),
+
+    #[error("Serde error: {0}")]
+    Serde(#[from] serde_json::Error),
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Eq, Hash, PartialEq)]
+#[serde(rename_all = "camelCase")]
 enum EventType {
     Message,
 }
@@ -44,25 +57,23 @@ where
         }
     }
 
-    async fn handle_client(&self, stream: TcpStream) {
-        let ws_stream = accept_async(stream).await.expect("Error during handshake");
+    async fn handle_client(&self, stream: TcpStream) -> Result<(), ServerError> {
+        let ws_stream = accept_async(stream).await?;
         let (_, mut receiver) = ws_stream.split();
 
-        let callbacks = Arc::clone(&self.event_callbacks);
         loop {
-            let msg = receiver
-                .next()
-                .await
-                .expect("Error reading message")
-                .expect("No message received");
+            let msg = receiver.next().await.expect("Error reading message")?;
 
             match msg {
                 Message::Text(text) => {
-                    if let Ok(event) = serde_json::from_str::<Event<P>>(&text) {
-                        if let Some(callback) = callbacks.read().unwrap().get(&event.r#type.clone())
-                        {
-                            callback(event);
-                        }
+                    let event = serde_json::from_str::<Event<P>>(&text)?;
+                    if let Some(callback) = self
+                        .event_callbacks
+                        .read()
+                        .unwrap()
+                        .get(&event.r#type.clone())
+                    {
+                        callback(event);
                     }
                 }
                 Message::Binary(bin) => {
@@ -74,6 +85,8 @@ where
                 _ => {}
             }
         }
+
+        Ok(())
     }
 
     fn on<F>(&self, event_type: EventType, callback: F)
@@ -84,23 +97,19 @@ where
         callbacks.insert(event_type, Box::new(callback));
     }
 
-    async fn start(&self) {
+    async fn start(&self) -> Result<(), ServerError> {
         println!(
             "Server is listening on {}",
             self.listener.local_addr().unwrap()
         );
 
         loop {
-            let (stream, _) = self
-                .listener
-                .accept()
-                .await
-                .expect("Error accepting connection");
+            let (stream, _) = self.listener.accept().await?;
 
             let cloned_self = self.clone();
 
             task::spawn(async move {
-                cloned_self.handle_client(stream).await;
+                let _ = cloned_self.handle_client(stream).await;
             });
         }
     }
@@ -120,5 +129,5 @@ async fn main() {
         process::exit(0);
     });
 
-    server.start().await;
+    let _ = server.start().await;
 }
