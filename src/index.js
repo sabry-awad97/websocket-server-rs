@@ -19,3 +19,16 @@ function sendMessage(message) {
 
 // Usage:
 sendMessage('Hello, server!');
+
+// To send a binary message
+function sendBinaryMessage() {
+  const buffer = new ArrayBuffer(4);
+  const view = new DataView(buffer);
+  view.setInt32(0, 123456, true);
+
+  // Send the ArrayBuffer as a binary message
+  socket.send(buffer);
+}
+
+// Usage:
+sendBinaryMessage();
